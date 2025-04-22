@@ -1348,11 +1348,11 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
         return -1;
     }
     char* box64_ld_library_path = getenv("BOX64_LD_LIBRARY_PATH");
+    elfheader_t* interp_header = NULL;
     if (elf_header->interp_name && box64_ld_library_path) {
         const char* delim = ":";
         char* token = NULL;
         FILE* f = NULL;
-        elfheader_t* interp_header = NULL;
         char buf[PATH_MAX] = { 0 };
         struct stat statbuf;
         token = strtok(box64_ld_library_path, delim);
@@ -1491,7 +1491,7 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
     // init x86_64 emu
     x64emu_t *emu = NewX64Emu(my_context, my_context->ep, (uintptr_t)my_context->stack, my_context->stacksz, 0);
     // stack setup is much more complicated then just that!
-    SetupInitialStack(emu); // starting here, the argv[] don't need free anymore
+    SetupInitialStack(emu, elf_header, interp_header); // starting here, the argv[] don't need free anymore
     SetupX64Emu(emu, NULL);
     if(box64_is32bits) {
         SetEAX(emu, my_context->argc);

@@ -145,6 +145,7 @@ typedef struct elfheader_s {
 
     char* interp_name;
     uintptr_t link_map_obj;
+    uintptr_t phoff;
 
 } elfheader_t;
 

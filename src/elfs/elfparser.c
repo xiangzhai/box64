@@ -165,7 +165,8 @@ elfheader_t* ParseElfHeader64(FILE* f, const char* name, int exec)
 
     printf_dump(LOG_DEBUG, "Read %zu Program header\n", h->numPHEntries);
     h->PHEntries._64 = (Elf64_Phdr*)box_calloc(h->numPHEntries, sizeof(Elf64_Phdr));
-    fseeko64(f, header.e_phoff ,SEEK_SET);
+    h->phoff = header.e_phoff;
+    fseeko64(f, h->phoff, SEEK_SET);
     if(fread(h->PHEntries._64, sizeof(Elf64_Phdr), h->numPHEntries, f)!=h->numPHEntries) {
             FreeElfHeader(&h);
             printf_log(LOG_INFO, "Cannot read all Program Header\n");

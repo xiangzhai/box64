@@ -49,7 +49,7 @@ void SetupInitialStack32(x64emu_t *emu)
  ;
 #endif
 EXPORTDYN
-void SetupInitialStack(x64emu_t *emu)
+void SetupInitialStack(x64emu_t *emu, elfheader_t* exec_header, elfheader_t* interp_header)
 {
     if(box64_is32bits) {
         SetupInitialStack32(emu);
@@ -118,11 +118,14 @@ void SetupInitialStack(x64emu_t *emu)
     33 0x7ffd507e6000
     */
     Push64(emu, 0); Push64(emu, 0);                         //AT_NULL(0)=0
-    //Push64(emu, ); Push64(emu, 3);                          //AT_PHDR(3)=address of the PH of the executable
+    Push64(emu, exec_header->image + exec_header->phoff); Push64(emu, 3);       //AT_PHDR(3)=address of the PH of the executable
     //Push64(emu, ); Push64(emu, 4);                          //AT_PHENT(4)=size of PH entry
-    //Push64(emu, ); Push64(emu, 5);                          //AT_PHNUM(5)=number of elf headers
+    Push64(emu, exec_header->numPHEntries); Push64(emu, 5);           //AT_PHNUM(5)=number of elf headers
     Push64(emu, box64_pagesize); Push64(emu, 6);            //AT_PAGESZ(6)
-    //Push64(emu, real_getauxval(7)); Push64(emu, 7);         //AT_BASE(7)=ld-2.27.so start (in memory)
+    if (interp_header) {
+        Push64(emu, interp_header->entrypoint);
+        Push64(emu, 7); //AT_BASE(7)=ld-2.27.so start (in memory)
+    }
     Push64(emu, 0); Push64(emu, 8);                         //AT_FLAGS(8)=0
     Push64(emu, R_RIP); Push64(emu, 9);                     //AT_ENTRY(9)=entrypoint
     Push64(emu, real_getauxval(11)); Push64(emu, 11);       //AT_UID(11)
