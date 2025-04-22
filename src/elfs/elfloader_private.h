@@ -143,6 +143,9 @@ typedef struct elfheader_s {
     int                 clean_sz;
     int                 clean_cap;
 
+    char* interp_name;
+    uintptr_t link_map_obj;
+
 } elfheader_t;
 
 #define R_X86_64_NONE           0       /* No reloc */

@@ -887,7 +887,7 @@ void pressure_vessel(int argc, const char** argv, int nextarg, const char* prog)
 #endif
 extern char** environ;
 
-int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elfheader_t** elfheader, int exec)
+int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elfheader_t** elfheader, elfheader_t** interpheader, int exec)
 {
     #ifndef STATICBUILD
     init_malloc_hook();
@@ -1346,6 +1346,44 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
         FreeBox64Context(&my_context);
         FreeCollection(&ld_preload);
         return -1;
+    }
+    char* box64_ld_library_path = getenv("BOX64_LD_LIBRARY_PATH");
+    if (elf_header->interp_name && box64_ld_library_path) {
+        const char* delim = ":";
+        char* token = NULL;
+        FILE* f = NULL;
+        elfheader_t* interp_header = NULL;
+        char buf[PATH_MAX] = { 0 };
+        struct stat statbuf;
+        token = strtok(box64_ld_library_path, delim);
+        while (token) {
+            snprintf(buf, sizeof(buf) - 1, "%s%s", token, elf_header->interp_name);
+            if (stat(buf, &statbuf) == 0) {
+                printf_log(LOG_DEBUG, "DEBUG: %s:%d ELF interpreter ld.so: %s\n", __func__, __LINE__, buf);
+                break;
+            }
+            token = strtok(NULL, delim);
+        }
+        if (buf[0]) {
+            f = fopen(buf, "rb");
+            if (f) {
+                interp_header = LoadAndCheckElfHeader(f, buf, 1);
+            } else {
+                printf_log(LOG_NONE, "Error: Cannot open %s\n", buf);
+            }
+        }
+        if (interp_header) {
+            *interpheader = interp_header;
+            AddElfHeader(my_context, interp_header);
+            if (CalcLoadAddr(interp_header)) {
+                printf_log(LOG_NONE, "Error: Reading elf header of %s\n", buf);
+                FreeElfHeader(&interp_header);
+            }
+            if (AllocLoadElfMemory(my_context, interp_header, 1)) {
+                printf_log(LOG_NONE, "Error: Loading elf %s\n", buf);
+                FreeElfHeader(&interp_header);
+            }
+        }
     }
     if (!strcmp(box64_guest_name, "heroic")) {
         // check if heroic needs patching (for the 2.15.1 version)

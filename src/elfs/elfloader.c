@@ -50,6 +50,7 @@ void* my__IO_2_1_stdin_  = (void*)2;
 void* my__IO_2_1_stdout_ = (void*)3;
 
 uintptr_t pltResolver64 = ~0LL;
+uintptr_t dl_runtime_resolve = ~0LL;
 
 // return the index of header (-1 if it doesn't exist)
 static int getElfIndex(box64context_t* ctx, elfheader_t* head) {
@@ -101,6 +102,10 @@ void FreeElfHeader(elfheader_t** head)
     actual_free(h->path);
     if(h->file)
         fclose(h->file);
+    if (h->interp_name) {
+        actual_free(h->interp_name);
+        h->interp_name = NULL;
+    }
     actual_free(h);
 
     *head = NULL;
@@ -422,6 +427,19 @@ int AllocLoadElfMemory(box64context_t* context, elfheader_t* head, int mainbin)
             // zero'd difference between filesz and memsz
             if(e->p_filesz != e->p_memsz)
                 memset(dest+e->p_filesz, 0, e->p_memsz - e->p_filesz);
+        }
+        if (head->PHEntries._64[i].p_type == PT_INTERP) {
+            Elf64_Phdr* e = &head->PHEntries._64[i];
+            if (e->p_filesz) {
+                fseeko64(head->file, e->p_offset, SEEK_SET);
+                head->interp_name = box_malloc(PATH_MAX);
+                memset(head->interp_name, 0, PATH_MAX);
+                if (fread(head->interp_name, e->p_filesz, 1, head->file) != 1) {
+                    printf_log(LOG_NONE, "Fail to read PT_INTERP part #%zu (size=%zd)\n", i, e->p_filesz);
+                    return 1;
+                }
+                printf_log(LOG_DEBUG, "DEBUG: %s:%d Elf interpreter ld.so: %s\n", __func__, __LINE__, head->interp_name);
+            }
         }
     }
     // record map
@@ -924,11 +942,21 @@ int RelocateElfPlt64(lib_t *maplib, lib_t *local_maplib, int bindnow, int deepbi
                 pltResolver64 = AddBridge(my_context->system, vFE, PltResolver64, 0, "PltResolver");
             }
             if(head->pltgot) {
+                if (dl_runtime_resolve == ~0LL) {
+                    dl_runtime_resolve = *(uintptr_t*)(head->pltgot + head->delta + 16);
+                    printf_log(LOG_DEBUG, "DEBUG: %s:%d dl_runtime_resolve @%p: %p\n", __func__, __LINE__, head->pltgot + head->delta + 16, dl_runtime_resolve);
+                }
                 *(uintptr_t*)(head->pltgot+head->delta+16) = pltResolver64;
+                head->link_map_obj = *(uintptr_t*)(head->pltgot + head->delta + 8);
                 *(uintptr_t*)(head->pltgot+head->delta+8) = (uintptr_t)head;
                 printf_dump(LOG_DEBUG, "PLT Resolver injected in plt.got at %p\n", (void*)(head->pltgot+head->delta+16));
             } else if(head->got) {
+                if (dl_runtime_resolve == ~0LL) {
+                    dl_runtime_resolve = *(uintptr_t*)(head->got + head->delta + 16);
+                    printf_log(LOG_DEBUG, "DEBUG: %s:%d dl_runtime_resolve @%p: %p\n", __func__, __LINE__, head->got + head->delta + 16, dl_runtime_resolve);
+                }
                 *(uintptr_t*)(head->got+head->delta+16) = pltResolver64;
+                head->link_map_obj = *(uintptr_t*)(head->got + head->delta + 8);
                 *(uintptr_t*)(head->got+head->delta+8) = (uintptr_t)head;
                 printf_dump(LOG_DEBUG, "PLT Resolver injected in got at %p\n", (void*)(head->got+head->delta+16));
             }
@@ -1901,6 +1929,11 @@ EXPORT void PltResolver64(x64emu_t* emu)
     if (!offs) {
         printf_log(LOG_NONE, "Error: PltResolver: Symbol %s %s(%sver %d: %s%s%s) not found, cannot apply R_X86_64_JUMP_SLOT %p (%p) in %s (local_maplib=%p, global maplib=%p, deepbind=%d)\n", (bind==STB_LOCAL)?"Local":((bind==STB_WEAK)?"Weak":""), symname, veropt?"opt":"", version, symname, vername?"@":"", vername?vername:"", p, *(void**)p, h->name, local_maplib, my_context->maplib, deepbind);
         emu->quit = 1;
+        // fallback to _dl_runtime_resolve_xsave
+        Push64(emu, slot);
+        Push64(emu, h->link_map_obj);
+        printf_log(LOG_DEBUG, "DEBUG: %s:%d fallback to dl_runtime_resolve: %p\n", __func__, __LINE__, dl_runtime_resolve);
+        Push64(emu, dl_runtime_resolve);
         return;
     } else {
         elfheader_t* sym_elf = FindElfSymbol(my_context, elfsym);
