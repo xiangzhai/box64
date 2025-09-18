@@ -41,6 +41,12 @@ void native_print_armreg(x64emu_t* emu, uintptr_t reg, uintptr_t n)
     dynarec_log(LOG_INFO, "Debug Register R%lu=0x%lx (%lu)\n", n, reg, reg);
 }
 
+void native_print_lareg(x64emu_t* emu, uintptr_t reg, uintptr_t n)
+{
+    (void)emu;
+    dynarec_log(LOG_INFO, "Debug Register $r%lu=0x%lx (%lu)\n", n, reg, reg);
+}
+
 void native_f2xm1(x64emu_t* emu)
 {
     ST0.d = expm1(LN2 * ST0.d);

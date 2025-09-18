@@ -619,6 +619,11 @@ uintptr_t dynarec64_AVX_66_0F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip,
                 SMREAD();
                 addr = geted(dyn, addr, ninst, nextop, &ed, x2, x1, &fixedaddress, rex, NULL, 1, 0);
                 if (vex.l) {
+                    if (ed == xR11) {
+                        MV(x1, xR11);
+                        MOV64x(x2, xR11);
+                        CALL(const_native_print_lareg, -1);
+                    }
                     XVLD(q0, ed, fixedaddress);
                 } else {
                     VLD(q0, ed, fixedaddress);

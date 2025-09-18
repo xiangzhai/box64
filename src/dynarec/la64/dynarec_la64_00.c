@@ -1083,6 +1083,11 @@ uintptr_t dynarec64_00(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
             GETGD;
             if (MODREG) { // reg <= reg
                 MVxw(TO_NAT((nextop & 7) + (rex.b << 3)), gd);
+                if (TO_NAT((nextop & 7) + (rex.b << 3)) == xR11 && gd == xRDI) {
+                    MV(x1, xR11);
+                    MOV64x(x2, xR11);
+                    CALL(const_native_print_lareg, -1);
+                }
             } else { // mem <= reg
                 addr = geted(dyn, addr, ninst, nextop, &ed, x2, x1, &fixedaddress, rex, &lock, 1, 0);
                 if (rex.w) {

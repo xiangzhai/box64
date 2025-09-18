@@ -132,6 +132,7 @@ uintptr_t getConst(la64_consts_t which)
         case const_jmptbl48: return getJumpTable48();
         case const_jmptbl64: return getJumpTable64();
         case const_context: return (uintptr_t)my_context;
+        case const_native_print_lareg: return (uintptr_t)native_print_lareg;
 
         case const_last: dynarec_log(LOG_NONE, "Warning, const last used\n");
             return 0;

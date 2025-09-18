@@ -103,6 +103,7 @@ typedef enum la64_consts_s {
     const_jmptbl48,
     const_jmptbl64,
     const_context,
+    const_native_print_lareg,
 
     const_last
 } la64_consts_t;

@@ -10,6 +10,7 @@ typedef struct x64emu_s x64emu_t;
 void native_fstp(x64emu_t* emu, void* p);
 
 void native_print_armreg(x64emu_t* emu, uintptr_t reg, uintptr_t n);
+void native_print_lareg(x64emu_t* emu, uintptr_t reg, uintptr_t n);
 
 void native_f2xm1(x64emu_t* emu);
 void native_fyl2x(x64emu_t* emu);
