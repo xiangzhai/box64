@@ -33,6 +33,7 @@
 #include "box64cpu_util.h"
 #include "wine_tools.h"
 #include "elfloader.h"
+#include "peloader.h"
 #include "custommem.h"
 #include "box64stack.h"
 #include "auxval.h"
@@ -42,6 +43,7 @@
 #include "symbols.h"
 #include "emu/x64run_private.h"
 #include "elfs/elfloader_private.h"
+#include "pe/peloader_private.h"
 #include "x64emu.h"
 #include "library.h"
 #include "core.h"
@@ -1183,6 +1185,8 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
     if(!elf_header) {
         int x86 = my_context->box86path?FileIsX86ELF(my_context->fullpath):0;
         int script = my_context->bashpath?FileIsShell(my_context->fullpath):0;
+        peheader_t* pe_header = LoadAndCheckPeHeader(f, my_context->fullpath, 1);
+        return 0;
         printf_log(LOG_NONE, "Error: Reading elf header of %s, Try to launch %s instead\n", my_context->fullpath, x86?"using box86":(script?"using bash":"natively"));
         fclose(f);
         FreeCollection(&ld_preload);

@@ -394,6 +394,8 @@ set(ELFLOADER_SRC
     "${BOX64_ROOT}/src/elfs/elfhash.c"
     "${BOX64_ROOT}/src/elfs/elfload_dump.c"
     "${BOX64_ROOT}/src/elfs/elfdwarf_private.c"
+    "${BOX64_ROOT}/src/pe/peloader.c"
+    "${BOX64_ROOT}/src/pe/peparser.c"
     "${BOX64_ROOT}/src/emu/entrypoint.c"
     "${BOX64_ROOT}/src/emu/x64compstrings.c"
     "${BOX64_ROOT}/src/emu/x64emu.c"
@@ -1235,7 +1237,7 @@ else()
         endif()
     else()
 	    set_property(TARGET ${BOX64} APPEND_STRING PROPERTY LINK_FLAGS "-Wl,--no-as-needed -lc -lm -ldl -lrt -lpthread -lresolv -lutil -Wl,--as-needed -pthread ")
-		target_link_libraries(${BOX64} c m dl pthread resolv util c)
+		target_link_libraries(${BOX64} c m dl pthread resolv util c bfd iberty sframe z zstd)
     endif()
 endif()
 if(DYNAREC)
