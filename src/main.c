@@ -1,5 +1,6 @@
 #include "core.h"
 
+#ifndef RBTREE_MT_SAFE_TEST
 int main(int argc, const char **argv, char **env) {
 
     x64emu_t* emu = NULL;
@@ -10,3 +11,4 @@ int main(int argc, const char **argv, char **env) {
 
     return emulate(emu, elf_header);
 }
+#endif

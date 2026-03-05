@@ -1315,3 +1315,551 @@ rb_set(tree, 0x140000, 0x141000, 135);
     rbtree_delete(tree);
 }
 #endif
+
+#ifdef RBTREE_MT_SAFE_TEST
+#include <pthread.h>
+#include <stdatomic.h>
+#include <string.h>
+
+extern FILE* ftrace;
+
+// Test configuration
+#define NUM_THREADS           10
+#define NUM_OPS               10000
+#define ADDR_RANGE            1000
+#define MAX_VALUE             255
+#define VERIFICATION_INTERVAL 100
+#define MAX_ERRORS_TO_PRINT   10
+
+// Global state
+rbtree_t* tree;
+uint32_t* shadow_memory; // Shadow memory as correct reference
+pthread_mutex_t shadow_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t print_mutex = PTHREAD_MUTEX_INITIALIZER;
+atomic_ulong total_operations = 0;
+atomic_ulong total_errors = 0;
+
+typedef enum {
+    OP_SET,
+    OP_UNSET,
+    OP_VERIFY
+} operation_type_t;
+
+typedef struct {
+    operation_type_t type;
+    uintptr_t start;
+    uintptr_t end;
+    uint32_t data;
+    uint32_t thread_id;
+    uint64_t timestamp;
+} operation_log_t;
+
+#define LOG_SIZE 1000000
+operation_log_t op_log[LOG_SIZE];
+atomic_int log_index = 0;
+
+typedef struct {
+    int thread_id;
+    uint64_t ops;
+    uint64_t errors;
+    uint64_t verify_failures;
+    uint64_t reads;
+    uint64_t writes;
+} thread_stats_t;
+
+thread_stats_t thread_stats[NUM_THREADS * 2];
+
+// Forward declarations
+void init_shadow(void);
+void shadow_set(uintptr_t addr, uint32_t value);
+uint32_t shadow_get(uintptr_t addr);
+int verify_with_shadow(uintptr_t addr, uint32_t tree_val, const char* context, int thread_id);
+void log_operation(operation_type_t type, uintptr_t start, uintptr_t end, uint32_t data, int thread_id);
+void replay_verify(void);
+void range_consistency_check(void);
+uint64_t calculate_tree_checksum(void);
+void print_statistics(void);
+void* writer_thread(void* arg);
+void* reader_thread(void* arg);
+void* mixed_thread(void* arg);
+void* validator_thread(void* arg);
+
+// Initialize shadow memory
+void init_shadow(void)
+{
+    shadow_memory = (uint32_t*)malloc(ADDR_RANGE * sizeof(uint32_t));
+    if (!shadow_memory) {
+        fprintf(stderr, "Failed to allocate shadow memory\n");
+        exit(1);
+    }
+
+    for (int i = 0; i < ADDR_RANGE; i++) {
+        shadow_memory[i] = i % (MAX_VALUE + 1); // Predictable initial values
+    }
+
+    printf("Shadow memory initialized with %d entries\n", ADDR_RANGE);
+}
+
+// Thread-safe shadow memory update
+void shadow_set(uintptr_t addr, uint32_t value)
+{
+    if (addr >= ADDR_RANGE) return;
+    pthread_mutex_lock(&shadow_mutex);
+    shadow_memory[addr] = value;
+    pthread_mutex_unlock(&shadow_mutex);
+}
+
+uint32_t shadow_get(uintptr_t addr)
+{
+    if (addr >= ADDR_RANGE) return 0;
+    pthread_mutex_lock(&shadow_mutex);
+    uint32_t val = shadow_memory[addr];
+    pthread_mutex_unlock(&shadow_mutex);
+    return val;
+}
+
+// Verify against shadow memory
+int verify_with_shadow(uintptr_t addr, uint32_t tree_val, const char* context, int thread_id)
+{
+    if (addr >= ADDR_RANGE) return 1;
+
+    uint32_t shadow_val = shadow_get(addr);
+
+    if (tree_val != shadow_val) {
+        pthread_mutex_lock(&print_mutex);
+        printf("[Thread %d] %s: Address 0x%lx mismatch! Tree=%u, Shadow=%u\n",
+            thread_id, context, (unsigned long)addr, tree_val, shadow_val);
+        atomic_fetch_add(&total_errors, 1);
+        pthread_mutex_unlock(&print_mutex);
+        return 0;
+    }
+    return 1;
+}
+
+// Log operations for replay verification
+void log_operation(operation_type_t type, uintptr_t start, uintptr_t end, uint32_t data, int thread_id)
+{
+    int idx = atomic_fetch_add(&log_index, 1);
+    if (idx < LOG_SIZE) {
+        op_log[idx].type = type;
+        op_log[idx].start = start;
+        op_log[idx].end = end;
+        op_log[idx].data = data;
+        op_log[idx].thread_id = thread_id;
+        op_log[idx].timestamp = time(NULL);
+    }
+}
+
+// Replay all logged operations to verify consistency
+void replay_verify(void)
+{
+    printf("\n=== Starting Replay Verification ===\n");
+
+    // Create a new clean tree
+    rbtree_t* replay_tree = rbtree_init("replay_tree");
+
+    int log_count = atomic_load(&log_index);
+    if (log_count > LOG_SIZE) log_count = LOG_SIZE;
+
+    printf("Replaying %d operations...\n", log_count);
+
+    // Replay all operations in order
+    for (int i = 0; i < log_count; i++) {
+        operation_log_t* op = &op_log[i];
+
+        switch (op->type) {
+            case OP_SET:
+                rb_set(replay_tree, op->start, op->end, op->data);
+                break;
+            case OP_UNSET:
+                rb_unset(replay_tree, op->start, op->end);
+                break;
+            case OP_VERIFY:
+                // Skip verification operations
+                break;
+        }
+
+        if (i % 10000 == 0 && i > 0) {
+            printf("Replayed %d operations...\n", i);
+        }
+    }
+
+    // Compare trees
+    printf("\nComparing trees...\n");
+    int errors = 0;
+    for (uintptr_t addr = 0; addr < ADDR_RANGE; addr++) {
+        uint32_t original = rb_get(tree, addr);
+        uint32_t replay = rb_get(replay_tree, addr);
+
+        if (original != replay) {
+            if (errors < MAX_ERRORS_TO_PRINT) {
+                printf("Replay mismatch: addr=0x%lx, original=%u, replay=%u\n",
+                    (unsigned long)addr, original, replay);
+            }
+            errors++;
+        }
+    }
+
+    printf("Replay verification complete. Errors found: %d\n", errors);
+    rbtree_delete(replay_tree);
+}
+
+// Check range consistency (no gaps/overlaps)
+void range_consistency_check(void)
+{
+    printf("\n=== Starting Range Consistency Check ===\n");
+
+    int errors = 0;
+    uint32_t last_value = 0;
+    uintptr_t last_end = 0;
+
+    // Use a simple array to track coverage
+    int* coverage = (int*)calloc(ADDR_RANGE, sizeof(int));
+
+    for (uintptr_t addr = 0; addr < ADDR_RANGE; addr++) {
+        uint32_t val = rb_get(tree, addr);
+        coverage[addr] = val;
+    }
+
+    // Check for gaps (value 0 might be valid, so we need another method)
+    // This is a simple check for sudden changes that might indicate problems
+
+    for (uintptr_t addr = 1; addr < ADDR_RANGE; addr++) {
+        if (coverage[addr] != coverage[addr - 1]) {
+            // Value changed, check if it's at a valid boundary
+            uintptr_t end;
+            uint32_t tmp;
+            rb_get_end(tree, addr - 1, &tmp, &end);
+
+            if (end != addr) {
+                printf("Possible boundary error: at 0x%lx value changed from %u to %u, but previous node ends at 0x%lx\n",
+                    (unsigned long)addr, coverage[addr - 1], coverage[addr], (unsigned long)end);
+                errors++;
+            }
+        }
+    }
+
+    free(coverage);
+    printf("Range consistency check complete. Found %d potential issues\n", errors);
+}
+
+// Calculate checksum of entire tree
+uint64_t calculate_tree_checksum(void)
+{
+    uint64_t checksum = 0;
+
+    for (uintptr_t addr = 0; addr < ADDR_RANGE; addr++) {
+        uint32_t val = rb_get(tree, addr);
+        checksum = checksum * 31 + val;
+    }
+
+    return checksum;
+}
+
+// Print detailed statistics
+void print_statistics(void)
+{
+    printf("\n=== Test Statistics ===\n");
+
+    uint64_t total_ops = 0;
+    uint64_t total_err = 0;
+    uint64_t total_verify = 0;
+    uint64_t total_reads = 0;
+    uint64_t total_writes = 0;
+
+    for (int i = 0; i < NUM_THREADS * 2; i++) {
+        printf("Thread %d: ops=%lu, errors=%lu, verify_fail=%lu, reads=%lu, writes=%lu\n",
+            thread_stats[i].thread_id,
+            thread_stats[i].ops,
+            thread_stats[i].errors,
+            thread_stats[i].verify_failures,
+            thread_stats[i].reads,
+            thread_stats[i].writes);
+
+        total_ops += thread_stats[i].ops;
+        total_err += thread_stats[i].errors;
+        total_verify += thread_stats[i].verify_failures;
+        total_reads += thread_stats[i].reads;
+        total_writes += thread_stats[i].writes;
+    }
+
+    printf("\nTotals:\n");
+    printf("Total operations: %lu\n", total_ops);
+    printf("Total reads: %lu\n", total_reads);
+    printf("Total writes: %lu\n", total_writes);
+    printf("Total errors: %lu (%.4f%%)\n", total_err,
+        total_ops > 0 ? (float)total_err / total_ops * 100 : 0);
+    printf("Total verification failures: %lu\n", total_verify);
+
+    uint64_t checksum = calculate_tree_checksum();
+    printf("Tree checksum: 0x%lx\n", (unsigned long)checksum);
+}
+
+// Writer thread - updates tree and shadow memory
+void* writer_thread(void* arg)
+{
+    thread_stats_t* stats = (thread_stats_t*)arg;
+    int thread_id = stats->thread_id;
+
+    for (int i = 0; i < NUM_OPS; i++) {
+        uintptr_t addr = rand() % ADDR_RANGE;
+        uint32_t new_value = rand() % (MAX_VALUE + 1);
+
+        // Update shadow memory first (as correct reference)
+        shadow_set(addr, new_value);
+
+        // Update the tree
+        int ret = rb_set(tree, addr, addr + 1, new_value);
+
+        stats->ops++;
+        stats->writes++;
+
+        // Log operation for replay
+        log_operation(OP_SET, addr, addr + 1, new_value, thread_id);
+
+        // Immediate verification
+        uint32_t tree_val = rb_get(tree, addr);
+        if (!verify_with_shadow(addr, tree_val, "immediate verify", thread_id)) {
+            stats->errors++;
+        }
+
+        // Random verification of other addresses
+        if (rand() % 10 == 0) {
+            uintptr_t check_addr = rand() % ADDR_RANGE;
+            uint32_t check_val = rb_get(tree, check_addr);
+            if (!verify_with_shadow(check_addr, check_val, "random verify", thread_id)) {
+                stats->verify_failures++;
+            }
+            stats->reads++;
+        }
+
+        atomic_fetch_add(&total_operations, 1);
+    }
+
+    return NULL;
+}
+
+// Reader thread - only reads and verifies
+void* reader_thread(void* arg)
+{
+    thread_stats_t* stats = (thread_stats_t*)arg;
+    int thread_id = stats->thread_id;
+
+    for (int i = 0; i < NUM_OPS; i++) {
+        uintptr_t addr = rand() % ADDR_RANGE;
+
+        uint32_t tree_val = rb_get(tree, addr);
+
+        stats->ops++;
+        stats->reads++;
+
+        if (!verify_with_shadow(addr, tree_val, "read verify", thread_id)) {
+            stats->errors++;
+        }
+
+        // Read same address multiple times to check consistency
+        if (rand() % 20 == 0) {
+            uintptr_t repeat_addr = rand() % ADDR_RANGE;
+            uint32_t first = rb_get(tree, repeat_addr);
+            uint32_t second = rb_get(tree, repeat_addr);
+
+            if (first != second) {
+                pthread_mutex_lock(&print_mutex);
+                printf("[Thread %d] Inconsistent reads: addr=0x%lx, first=%u, second=%u\n",
+                    thread_id, (unsigned long)repeat_addr, first, second);
+                stats->verify_failures++;
+                pthread_mutex_unlock(&print_mutex);
+            }
+            stats->reads += 2;
+        }
+
+        atomic_fetch_add(&total_operations, 1);
+    }
+
+    return NULL;
+}
+
+// Mixed thread - does both reads and writes
+void* mixed_thread(void* arg)
+{
+    thread_stats_t* stats = (thread_stats_t*)arg;
+    int thread_id = stats->thread_id;
+
+    for (int i = 0; i < NUM_OPS; i++) {
+        if (rand() % 2 == 0) {
+            // Write operation
+            uintptr_t addr = rand() % ADDR_RANGE;
+            uint32_t new_value = rand() % (MAX_VALUE + 1);
+
+            shadow_set(addr, new_value);
+            rb_set(tree, addr, addr + 1, new_value);
+
+            stats->writes++;
+            log_operation(OP_SET, addr, addr + 1, new_value, thread_id);
+
+            // Verify immediately
+            uint32_t tree_val = rb_get(tree, addr);
+            if (!verify_with_shadow(addr, tree_val, "mixed write verify", thread_id)) {
+                stats->errors++;
+            }
+        } else {
+            // Read operation
+            uintptr_t addr = rand() % ADDR_RANGE;
+            uint32_t tree_val = rb_get(tree, addr);
+
+            if (!verify_with_shadow(addr, tree_val, "mixed read verify", thread_id)) {
+                stats->errors++;
+            }
+            stats->reads++;
+        }
+
+        stats->ops++;
+        atomic_fetch_add(&total_operations, 1);
+    }
+
+    return NULL;
+}
+
+// Validator thread - continuously verifies the entire tree
+void* validator_thread(void* arg)
+{
+    thread_stats_t* stats = (thread_stats_t*)arg;
+    int thread_id = stats->thread_id;
+
+    while (atomic_load(&total_operations) < (NUM_THREADS * 2 * NUM_OPS)) {
+        // Verify a random range
+        uintptr_t start = rand() % (ADDR_RANGE - 100);
+        uintptr_t end = start + 100;
+
+        for (uintptr_t addr = start; addr < end; addr++) {
+            uint32_t tree_val = rb_get(tree, addr);
+            if (!verify_with_shadow(addr, tree_val, "validator verify", thread_id)) {
+                stats->errors++;
+            }
+            stats->reads++;
+            stats->ops++;
+        }
+
+        usleep(1000); // Small delay to avoid overwhelming
+    }
+
+    return NULL;
+}
+
+int main(int argc, char* argv[])
+{
+    ftrace = stdout;
+    srand(time(NULL));
+
+    printf("========================================\n");
+    printf("   Red-Black Tree Thread Safety Test    \n");
+    printf("========================================\n");
+    printf("Configuration:\n");
+    printf("  Threads: %d\n", NUM_THREADS * 2);
+    printf("  Operations per thread: %d\n", NUM_OPS);
+    printf("  Address range: 0-%d\n", ADDR_RANGE - 1);
+    printf("  Max value: %d\n", MAX_VALUE);
+    printf("========================================\n\n");
+
+    // Initialize
+    printf("Initializing test environment...\n");
+    tree = rbtree_init("test_tree");
+    init_shadow();
+
+    // Pre-populate with some data
+    printf("Pre-populating data...\n");
+    for (int i = 0; i < ADDR_RANGE; i += 10) {
+        uint32_t val = i % (MAX_VALUE + 1);
+        shadow_set(i, val);
+        rb_set(tree, i, i + 5, val);
+    }
+
+    printf("Initial tree checksum: 0x%lx\n", (unsigned long)calculate_tree_checksum());
+
+    // Create threads
+    pthread_t threads[NUM_THREADS * 2];
+
+    printf("\nStarting %d threads...\n", NUM_THREADS * 2);
+
+    // Reset stats
+    memset(thread_stats, 0, sizeof(thread_stats));
+
+    for (int i = 0; i < NUM_THREADS * 2; i++) {
+        thread_stats[i].thread_id = i;
+
+        // Mix different types of threads
+        if (i < NUM_THREADS) {
+            // First half are writer threads
+            pthread_create(&threads[i], NULL, writer_thread, &thread_stats[i]);
+        } else if (i < NUM_THREADS * 3 / 2) {
+            // Next quarter are reader threads
+            pthread_create(&threads[i], NULL, reader_thread, &thread_stats[i]);
+        } else {
+            // Last quarter are mixed threads
+            pthread_create(&threads[i], NULL, mixed_thread, &thread_stats[i]);
+        }
+    }
+
+    // Wait for all threads to complete
+    printf("Waiting for threads to complete...\n");
+    for (int i = 0; i < NUM_THREADS * 2; i++) {
+        pthread_join(threads[i], NULL);
+    }
+
+    printf("\n=== Test Results ===\n");
+
+    // Print statistics
+    print_statistics();
+
+    // Range consistency check
+    range_consistency_check();
+
+    // Final comprehensive verification
+    printf("\n=== Final Comprehensive Verification ===\n");
+    int final_errors = 0;
+    int printed_errors = 0;
+
+    for (uintptr_t addr = 0; addr < ADDR_RANGE; addr++) {
+        uint32_t tree_val = rb_get(tree, addr);
+        uint32_t shadow_val = shadow_get(addr);
+
+        if (tree_val != shadow_val) {
+            if (printed_errors < MAX_ERRORS_TO_PRINT) {
+                printf("Final mismatch: addr=0x%lx, tree=%u, shadow=%u\n",
+                    (unsigned long)addr, tree_val, shadow_val);
+                printed_errors++;
+            }
+            final_errors++;
+        }
+    }
+
+    printf("\nFinal verification results:\n");
+    printf("  Total addresses: %d\n", ADDR_RANGE);
+    printf("  Mismatches found: %d (%.2f%%)\n", final_errors,
+        (float)final_errors / ADDR_RANGE * 100);
+
+    if (final_errors == 0) {
+        printf("All verifications passed! Tree is consistent!\n");
+    } else {
+        printf("Inconsistencies detected! Tree may be corrupted!\n");
+    }
+
+    // Replay verification
+    replay_verify();
+
+    // Print tree structure if small enough
+    if (ADDR_RANGE <= 100) {
+        printf("\nFinal tree structure:\n");
+        rbtree_print(tree);
+    }
+
+    // Cleanup
+    printf("\nCleaning up...\n");
+    rbtree_delete(tree);
+    free(shadow_memory);
+
+    printf("\nTest completed. Total errors: %lu\n", atomic_load(&total_errors));
+
+    return (final_errors == 0) ? 0 : 1;
+}
+#endif

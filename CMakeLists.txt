@@ -1281,6 +1281,10 @@ if(DYNAREC)
 endif()
 target_link_libraries(${BOX64} interpreter)
 
+add_executable(test_rbtree ${OS_LINUX_SRC} ${ELFLOADER_SRC} ${WRAPPEDS} ${WRAPPEDS32})
+target_compile_definitions(test_rbtree PUBLIC -DRBTREE_MT_SAFE_TEST)
+target_link_libraries(test_rbtree m dl rt pthread resolv dynarec interpreter)
+
 if(${CMAKE_VERSION} VERSION_LESS "3.13")
     if(NOT NOLOADADDR)
         if(CMAKE_C_COMPILER_ID STREQUAL "Clang" OR WITH_MOLD)
